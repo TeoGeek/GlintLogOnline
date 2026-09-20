@@ -2,16 +2,16 @@
 <rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
   <channel>
     <title>TeoGeek</title>
-    <link>https://teogeek.pages.dev/</link>
+    <link>https://blog.kusteo.com/</link>
     <description>A minimal personal blog about technology, experiments, notes, and the web.</description>
     <language>en</language>
     <lastBuildDate>Sat, 19 Sep 2026 00:00:00 GMT</lastBuildDate>
     <item>
       <title>AWS EC2 + Ubuntu: Deploying V2Ray</title>
-      <link>https://teogeek.pages.dev/post.html?slug=aws-ec2-v2ray-ubuntu-deployment-guide-en</link>
+      <link>https://blog.kusteo.com/post.html?slug=aws-ec2-v2ray-ubuntu-deployment-guide-en</link>
       <description>A concise guide to deploying and configuring V2Ray on an AWS EC2 Ubuntu server.</description>
       <pubDate>Sat, 19 Sep 2026 00:00:00 GMT</pubDate>
-      <guid isPermaLink="true">https://teogeek.pages.dev/post.html?slug=aws-ec2-v2ray-ubuntu-deployment-guide-en</guid>
+      <guid isPermaLink="true">https://blog.kusteo.com/post.html?slug=aws-ec2-v2ray-ubuntu-deployment-guide-en</guid>
       <content:encoded><![CDATA[# AWS EC2 + Ubuntu: A Practical Guide to Deploying V2Ray
 
 ## Introduction
