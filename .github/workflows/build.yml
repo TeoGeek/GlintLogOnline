@@ -10,8 +10,8 @@ permissions:
   contents: write
 
 env:
-  SITE_URL: https://blog.kusteo.com
-  SITE_NAME: Site Name
+  SITE_URL: https://teogeek.pages.dev
+  SITE_NAME: TeoGeek
   SITE_DESCRIPTION: A minimal personal blog about technology, experiments, notes, and the web.
 
 jobs:
@@ -19,19 +19,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Checkout the repository using the built-in GITHUB_TOKEN.
+      # Step 1: Checkout repository.
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # Step 2: Install Node.js.
+      # Step 2: Setup Node.js.
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      # Step 3A: Read every Markdown file and generate data/posts.json.
+      # Step 3A: Generate posts.json.
       - name: Generate posts.json
         shell: bash
         run: |
@@ -216,7 +216,7 @@ jobs:
           );
           NODE
 
-      # Step 3B: Build an RSS 2.0 feed.
+      # Step 3B: Generate RSS feed with full article content.
       - name: Generate feed.xml
         shell: bash
         run: |
@@ -233,6 +233,9 @@ jobs:
           const SITE_DESCRIPTION =
             process.env.SITE_DESCRIPTION;
 
+          const POSTS_DIR =
+            path.resolve('posts');
+
           const posts = JSON.parse(
             await fs.readFile(
               path.resolve('data/posts.json'),
@@ -248,10 +251,47 @@ jobs:
               .replaceAll('"', '&quot;')
               .replaceAll("'", '&apos;');
 
-          const items = posts
-            .map(post => {
+          const escapeCdata = value =>
+            String(value ?? '')
+              .replaceAll(
+                ']]>',
+                ']]]]><![CDATA[>'
+              );
+
+          const items = await Promise.all(
+            posts.map(async post => {
               const link =
                 `${SITE_URL}/post.html?slug=${encodeURIComponent(post.slug)}`;
+
+              const articlePath =
+                path.join(
+                  POSTS_DIR,
+                  `${post.slug}.md`
+                );
+
+              let articleSource = '';
+
+              try {
+                articleSource =
+                  await fs.readFile(
+                    articlePath,
+                    'utf8'
+                  );
+              } catch (error) {
+                console.warn(
+                  `Unable to read article: ${articlePath}`
+                );
+              }
+
+              /*
+               * Remove YAML frontmatter from the RSS content.
+               * The RSS reader should receive only the article body.
+               */
+              articleSource =
+                articleSource.replace(
+                  /^\uFEFF?---\s*[\s\S]*?\r?\n---\s*\r?\n/,
+                  ''
+                ).trim();
 
               return [
                 '    <item>',
@@ -260,10 +300,11 @@ jobs:
                 `      <description>${escapeXml(post.summary)}</description>`,
                 `      <pubDate>${escapeXml(new Date(post.date).toUTCString())}</pubDate>`,
                 `      <guid isPermaLink="true">${escapeXml(link)}</guid>`,
+                `      <content:encoded><![CDATA[${escapeCdata(articleSource)}]]></content:encoded>`,
                 '    </item>'
               ].join('\n');
             })
-            .join('\n');
+          );
 
           const lastBuildDate =
             posts.length
@@ -281,69 +322,7 @@ jobs:
             `    <description>${escapeXml(SITE_DESCRIPTION)}</description>`,
             '    <language>en</language>',
             `    <lastBuildDate>${escapeXml(lastBuildDate)}</lastBuildDate>`,
-            items,
-            '  </channel>',
-            '</rss>',
-            ''
-          ].join('\n');
-
-          /*
-           * Add the complete article HTML to RSS.
-           *
-           * RSS readers can display the article directly
-           * without depending on post.html JavaScript.
-           *
-           * The generated RSS above keeps the original
-           * article index structure intact.
-           */
-
-          const rssItemsWithContent = posts
-            .map(post => {
-              const link =
-                `${SITE_URL}/post.html?slug=${encodeURIComponent(post.slug)}`;
-
-              const articlePath =
-                path.resolve(
-                  'posts',
-                  `${post.slug}.md`
-                );
-
-              let articleSource = '';
-
-              try {
-                articleSource =
-                  require('node:fs')
-                    .readFileSync(
-                      articlePath,
-                      'utf8'
-                    );
-              } catch (_) {
-                articleSource = '';
-              }
-
-              return [
-                '    <item>',
-                `      <title>${escapeXml(post.title)}</title>`,
-                `      <link>${escapeXml(link)}</link>`,
-                `      <description>${escapeXml(post.summary)}</description>`,
-                `      <pubDate>${escapeXml(new Date(post.date).toUTCString())}</pubDate>`,
-                `      <guid isPermaLink="true">${escapeXml(link)}</guid>`,
-                `      <content:encoded><![CDATA[${articleSource}]]></content:encoded>`,
-                '    </item>'
-              ].join('\n');
-            })
-            .join('\n');
-
-          const rssWithContent = [
-            '<?xml version="1.0" encoding="UTF-8"?>',
-            '<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">',
-            '  <channel>',
-            `    <title>${escapeXml(SITE_NAME)}</title>`,
-            `    <link>${escapeXml(SITE_URL + '/')}</link>`,
-            `    <description>${escapeXml(SITE_DESCRIPTION)}</description>`,
-            '    <language>en</language>',
-            `    <lastBuildDate>${escapeXml(lastBuildDate)}</lastBuildDate>`,
-            rssItemsWithContent,
+            ...items,
             '  </channel>',
             '</rss>',
             ''
@@ -351,16 +330,16 @@ jobs:
 
           await fs.writeFile(
             path.resolve('data/feed.xml'),
-            rssWithContent,
+            xml,
             'utf8'
           );
 
           console.log(
-            `Generated feed.xml with ${posts.length} published items.`
+            `Generated feed.xml with ${posts.length} published items and full article content.`
           );
           NODE
 
-      # Step 3C: Build a sitemap for the static pages and published articles.
+      # Step 3C: Generate sitemap.xml.
       - name: Generate sitemap.xml
         shell: bash
         run: |
@@ -422,7 +401,7 @@ jobs:
           );
           NODE
 
-      # Step 4: Commit generated outputs and push with GITHUB_TOKEN.
+      # Step 4: Commit generated files.
       - name: Commit generated data
         shell: bash
         run: |
