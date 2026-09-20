@@ -1,315 +1,470 @@
-name: Build static blog indexes
+(() => {
+  'use strict';
 
-on:
-  push:
-    branches:
-      - main
-  workflow_dispatch:
+  const root = document.querySelector('#post-root');
+  if (!root) return;
 
-permissions:
-  contents: write
+  function escapeHtml(value) {
+    return String(value ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+  }
 
-env:
-  # Canonical public URL. Keep this without a trailing slash.
-  SITE_URL: https://blog.kusteo.com
+  function setMeta(selector, content) {
+    const element = document.querySelector(selector);
+    if (element) element.setAttribute('content', content);
+  }
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
+  function setArticleMeta(frontmatter, config) {
+    const title = String(frontmatter.title || 'Article');
+    const summary = String(frontmatter.summary || '');
+    const fullTitle = `${title} — ${config.siteName}`;
+    const url = window.location.href;
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+    document.title = fullTitle;
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
+    document.querySelector('meta[name="description"]')?.setAttribute(
+      'content',
+      summary || config.siteDescription
+    );
 
-      - name: Generate posts.json
-        shell: bash
-        run: |
-          node --input-type=module <<'NODE'
-          import { promises as fs } from 'node:fs';
-          import path from 'node:path';
+    setMeta('meta[property="og:title"]', fullTitle);
+    setMeta(
+      'meta[property="og:description"]',
+      summary || config.siteDescription
+    );
+    setMeta('meta[property="og:url"]', url);
+    setMeta('meta[property="og:site_name"]', config.siteName);
+    setMeta('meta[name="twitter:title"]', fullTitle);
+    setMeta(
+      'meta[name="twitter:description"]',
+      summary || config.siteDescription
+    );
+  }
 
-          const POSTS_DIR = path.resolve('content/posts');
-          const OUT_DIR = path.resolve('data');
-          await fs.mkdir(OUT_DIR, { recursive: true });
+  function splitFrontmatter(source) {
+    const normalized = source
+      .replace(/^\uFEFF/, '')
+      .replace(/\r\n?/g, '\n');
 
-          function parseScalar(raw) {
-            const value = raw.trim();
-            if (value === 'true') return true;
-            if (value === 'false') return false;
-            if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-              return value.slice(1, -1).replace(/\\([\\"'])/g, '$1');
-            }
-            if (value.startsWith('[') && value.endsWith(']')) {
-              return value.slice(1, -1).split(',').map(item => item.trim()).filter(Boolean).map(parseScalar);
-            }
-            return value;
+    if (!normalized.startsWith('---\n')) {
+      return {
+        data: {},
+        content: normalized
+      };
+    }
+
+    const end = normalized.indexOf('\n---', 4);
+
+    if (end === -1) {
+      return {
+        data: {},
+        content: normalized
+      };
+    }
+
+    const yamlText = normalized.slice(4, end).trim();
+    const content = normalized
+      .slice(end + 4)
+      .replace(/^\n+/, '');
+
+    return {
+      data: window.jsyaml.load(yamlText) || {},
+      content
+    };
+  }
+
+  function makeRenderer() {
+    const renderer = new marked.Renderer();
+
+    renderer.link = function(token) {
+      const href = String(token.href || '');
+
+      const title = token.title
+        ? ` title="${escapeHtml(token.title)}"`
+        : '';
+
+      const text = this.parser.parseInline(
+        token.tokens || []
+      );
+
+      const external = /^https?:\/\//i.test(href);
+
+      const attrs = external
+        ? ' target="_blank" rel="noopener noreferrer"'
+        : '';
+
+      return `<a href="${escapeHtml(href)}"${title}${attrs}>${text}</a>`;
+    };
+
+    renderer.image = function(token) {
+      const href = String(token.href || '');
+      const alt = String(token.text || '');
+
+      const title = token.title
+        ? ` title="${escapeHtml(token.title)}"`
+        : '';
+
+      return `<img src="${escapeHtml(href)}" alt="${escapeHtml(alt)}" loading="lazy"${title}>`;
+    };
+
+    renderer.code = function(token) {
+      const langRaw = String(token.lang || '')
+        .split(/\s+/)[0];
+
+      const lang = langRaw || 'text';
+
+      const highlighted = token.text || '';
+
+      const langClass = langRaw
+        ? `language-${escapeHtml(langRaw)}`
+        : '';
+
+      return `<div class="code-wrap">
+        <span class="code-lang">${escapeHtml(lang)}</span>
+        <button class="copy-code" type="button" data-copy-code>Copy</button>
+        <pre><code class="hljs ${langClass}">${highlighted}</code></pre>
+      </div>`;
+    };
+
+    return renderer;
+  }
+
+  function configureMarked() {
+    if (
+      !window.marked ||
+      !window.markedHighlight ||
+      !window.hljs
+    ) {
+      throw new Error(
+        'Markdown dependencies failed to load.'
+      );
+    }
+
+    const { Marked } = window.marked;
+
+    const extension =
+      window.markedHighlight.markedHighlight({
+        emptyLangClass: 'hljs',
+        langPrefix: 'language-',
+
+        highlight(code, lang) {
+          const language =
+            lang && window.hljs.getLanguage(lang)
+              ? lang
+              : 'plaintext';
+
+          return window.hljs.highlight(code, {
+            language
+          }).value;
+        }
+      });
+
+    const instance = new Marked(extension);
+
+    instance.use({
+      gfm: true,
+      renderer: makeRenderer()
+    });
+
+    return instance;
+  }
+
+  function fallbackCopy(text) {
+    const textarea =
+      document.createElement('textarea');
+
+    textarea.value = text;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+
+    document.body.appendChild(textarea);
+    textarea.select();
+
+    let success = false;
+
+    try {
+      success = document.execCommand('copy');
+    } catch (_) {
+      success = false;
+    }
+
+    textarea.remove();
+
+    return success;
+  }
+
+  async function copyCode(button) {
+    const code = button
+      .closest('.code-wrap')
+      ?.querySelector('code');
+
+    if (!code) return;
+
+    const text = code.textContent || '';
+    let success = false;
+
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        success = true;
+      }
+    } catch (_) {}
+
+    if (!success) {
+      success = fallbackCopy(text);
+    }
+
+    const original = button.textContent;
+
+    button.textContent = success
+      ? 'Copied'
+      : 'Copy failed';
+
+    window.setTimeout(() => {
+      button.textContent = original;
+    }, 1400);
+  }
+
+  function enhanceCodeButtons() {
+    root
+      .querySelectorAll('.copy-code')
+      .forEach(button => {
+        button.addEventListener(
+          'click',
+          () => copyCode(button)
+        );
+      });
+  }
+
+  function showNotFound(config) {
+    document.title =
+      `Article not found — ${config.siteName}`;
+
+    setMeta(
+      'meta[name="description"]',
+      `Article not found — ${config.siteName}`
+    );
+
+    setMeta(
+      'meta[property="og:title"]',
+      `Article not found — ${config.siteName}`
+    );
+
+    setMeta(
+      'meta[property="og:description"]',
+      `Article not found — ${config.siteName}`
+    );
+
+    setMeta(
+      'meta[property="og:url"]',
+      window.location.href
+    );
+
+    root.innerHTML = `
+      <div class="empty-page">
+        <section>
+          <p class="error-code">404</p>
+          <h1>Article not found</h1>
+          <p>
+            The article could not be loaded.
+            It may have been moved, renamed,
+            or still be a draft.
+          </p>
+          <a class="text-link" href="./index.html">
+            Back to Posts
+          </a>
+        </section>
+      </div>
+    `;
+  }
+
+  function showGenericError() {
+    root.innerHTML = `
+      <div class="status-box">
+        <p>Failed to load this article.</p>
+        <p>
+          <a href="./index.html">Back to Posts</a>
+        </p>
+      </div>
+    `;
+  }
+
+  function formatDate(value) {
+    if (!value) return '';
+
+    const date = new Date(value);
+
+    return Number.isNaN(date.getTime())
+      ? String(value)
+      : new Intl.DateTimeFormat('en-US', {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        }).format(date);
+  }
+
+  async function loadArticle(config) {
+    const slugRaw = new URLSearchParams(
+      window.location.search
+    ).get('slug');
+
+    const slug =
+      slugRaw &&
+      /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slugRaw)
+        ? slugRaw
+        : null;
+
+    if (!slug) {
+      showNotFound(config);
+      return;
+    }
+
+    try {
+      // Articles are stored in /posts/
+      const response = await fetch(
+        `./posts/${encodeURIComponent(slug)}.md`,
+        {
+          cache: 'no-store'
+        }
+      );
+
+      if (!response.ok) {
+        if (response.status === 404) {
+          showNotFound(config);
+        } else {
+          showGenericError();
+        }
+
+        return;
+      }
+
+      const source = await response.text();
+
+      const {
+        data,
+        content
+      } = splitFrontmatter(source);
+
+      if (data.draft === true) {
+        showNotFound(config);
+        return;
+      }
+
+      const title = String(
+        data.title || 'Untitled'
+      );
+
+      const summary = String(
+        data.summary || ''
+      );
+
+      const tags = Array.isArray(data.tags)
+        ? data.tags.map(String)
+        : [];
+
+      setArticleMeta(data, config);
+
+      const renderer = configureMarked();
+
+      const rendered = renderer.parse(content);
+
+      const safe =
+        window.DOMPurify.sanitize(
+          rendered,
+          {
+            USE_PROFILES: {
+              html: true
+            },
+            ADD_ATTR: [
+              'target',
+              'rel',
+              'loading'
+            ]
+          }
+        );
+
+      root.innerHTML = `
+        <a class="post-back" href="./index.html">
+          ← Back to Posts
+        </a>
+
+        <header class="article-header">
+          <p class="eyebrow">Article</p>
+
+          <h1>${escapeHtml(title)}</h1>
+
+          ${
+            summary
+              ? `
+                <p class="article-summary">
+                  ${escapeHtml(summary)}
+                </p>
+              `
+              : ''
           }
 
-          function parseFrontmatter(source) {
-            const normalized = source.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
-            if (!normalized.startsWith('---\n')) throw new Error('Missing YAML frontmatter');
-            const end = normalized.indexOf('\n---', 4);
-            if (end === -1) throw new Error('Unclosed YAML frontmatter');
-            const data = {};
-            for (const line of normalized.slice(4, end).split('\n')) {
-              const trimmed = line.trim();
-              if (!trimmed || trimmed.startsWith('#')) continue;
-              const match = trimmed.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
-              if (!match) throw new Error(`Unsupported frontmatter line: ${line}`);
-              data[match[1]] = parseScalar(match[2]);
+          <div class="article-meta">
+            <time datetime="${escapeHtml(
+              data.date || ''
+            )}">
+              ${escapeHtml(
+                formatDate(data.date)
+              )}
+            </time>
+
+            ${
+              tags.length
+                ? `
+                  <span aria-hidden="true">·</span>
+
+                  <span class="article-tags">
+                    ${tags
+                      .map(
+                        tag =>
+                          `<span class="article-tag">${escapeHtml(tag)}</span>`
+                      )
+                      .join('')}
+                  </span>
+                `
+                : ''
             }
-            return data;
-          }
+          </div>
+        </header>
 
-          const entries = await fs.readdir(POSTS_DIR, { withFileTypes: true });
-          const posts = [];
-          for (const entry of entries) {
-            if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
-            const slug = entry.name.slice(0, -3);
-            if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) {
-              throw new Error(`Invalid slug: ${slug}. Use lowercase English letters, numbers, and hyphens only.`);
-            }
-            const source = await fs.readFile(path.join(POSTS_DIR, entry.name), 'utf8');
-            const frontmatter = parseFrontmatter(source);
-            if (frontmatter.draft === true) continue;
-            if (!frontmatter.title || !frontmatter.date) throw new Error(`${entry.name}: title and date are required.`);
-            const date = new Date(frontmatter.date);
-            if (Number.isNaN(date.getTime())) throw new Error(`${entry.name}: invalid ISO date: ${frontmatter.date}`);
-            const tags = Array.isArray(frontmatter.tags) ? frontmatter.tags.map(String) : [];
-            posts.push({ slug, title: String(frontmatter.title), date: String(frontmatter.date), tags, summary: String(frontmatter.summary || '') });
-          }
+        <div class="article-content prose">
+          ${safe}
+        </div>
+      `;
 
-          posts.sort((a, b) => new Date(b.date) - new Date(a.date));
-          await fs.writeFile(path.join(OUT_DIR, 'posts.json'), JSON.stringify(posts, null, 2) + '\n', 'utf8');
-          console.log(`Generated posts.json with ${posts.length} published posts.`);
-          NODE
+      enhanceCodeButtons();
 
-      # Generate a full-text RSS feed. This is the only functional change needed
-      # for RSS readers that show "Loading article..." when opening the article page.
-      - name: Generate feed.xml
-        shell: bash
-        run: |
-          node --input-type=module <<'NODE'
-          import { promises as fs } from 'node:fs';
-          import path from 'node:path';
+      window.scrollTo(0, 0);
 
-          const SITE_URL = process.env.SITE_URL.replace(/\/$/, '');
-          const config = JSON.parse(await fs.readFile(path.resolve('config.json'), 'utf8'));
-          const SITE_NAME = String(config.siteName || 'TeoGeek');
-          const SITE_DESCRIPTION = String(config.siteDescription || '');
-          const posts = JSON.parse(await fs.readFile(path.resolve('data/posts.json'), 'utf8'));
-          const POSTS_DIR = path.resolve('content/posts');
+      // TODO: Giscus can be mounted after .article-content when comments are enabled.
+      // TODO: KaTeX can be enabled here when mathematical notation is needed.
 
-          const escapeXml = value => String(value ?? '')
-            .replaceAll('&', '&amp;')
-            .replaceAll('<', '&lt;')
-            .replaceAll('>', '&gt;')
-            .replaceAll('"', '&quot;')
-            .replaceAll("'", '&apos;');
+    } catch (error) {
+      console.error(
+        'Failed to load article:',
+        error
+      );
 
-          const escapeHtml = value => String(value ?? '')
-            .replaceAll('&', '&amp;')
-            .replaceAll('<', '&lt;')
-            .replaceAll('>', '&gt;')
-            .replaceAll('"', '&quot;')
-            .replaceAll("'", '&#39;');
+      showGenericError();
+    }
+  }
 
-          function inlineMarkdown(value) {
-            let text = escapeHtml(value);
-            text = text.replace(/!\[([^\]]*)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)/g, (_, alt, url, title) =>
-              `<img src="${escapeHtml(url)}" alt="${alt}"${title ? ` title="${escapeHtml(title)}"` : ''} loading="lazy">`);
-            text = text.replace(/\[([^\]]+)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)/g, (_, label, url, title) =>
-              `<a href="${escapeHtml(url)}"${title ? ` title="${escapeHtml(title)}"` : ''}>${label}</a>`);
-            text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
-            text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-            text = text.replace(/__([^_]+)__/g, '<strong>$1</strong>');
-            text = text.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-            text = text.replace(/_([^_]+)_/g, '<em>$1</em>');
-            return text;
-          }
-
-          function markdownToHtml(markdown) {
-            const normalized = markdown.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
-            const body = normalized.replace(/^---\n[\s\S]*?\n---\n?/, '');
-            const lines = body.split('\n');
-            const out = [];
-            let paragraph = [];
-            let listType = null;
-            let listItems = [];
-            let quote = [];
-            let code = null;
-
-            const flushParagraph = () => {
-              if (!paragraph.length) return;
-              out.push(`<p>${inlineMarkdown(paragraph.join(' '))}</p>`);
-              paragraph = [];
-            };
-            const flushList = () => {
-              if (!listType) return;
-              const tag = listType === 'ol' ? 'ol' : 'ul';
-              out.push(`<${tag}>${listItems.map(item => `<li>${inlineMarkdown(item)}</li>`).join('')}</${tag}>`);
-              listType = null;
-              listItems = [];
-            };
-            const flushQuote = () => {
-              if (!quote.length) return;
-              out.push(`<blockquote><p>${inlineMarkdown(quote.join(' '))}</p></blockquote>`);
-              quote = [];
-            };
-
-            for (const line of lines) {
-              if (code) {
-                if (/^```/.test(line)) {
-                  out.push(`<pre><code${code.lang ? ` class="language-${escapeHtml(code.lang)}"` : ''}>${escapeHtml(code.lines.join('\n'))}</code></pre>`);
-                  code = null;
-                } else {
-                  code.lines.push(line);
-                }
-                continue;
-              }
-
-              const fence = line.match(/^```\s*([\w+-]*)\s*$/);
-              if (fence) {
-                flushParagraph();
-                flushList();
-                flushQuote();
-                code = { lang: fence[1] || '', lines: [] };
-                continue;
-              }
-
-              if (!line.trim()) {
-                flushParagraph();
-                flushList();
-                flushQuote();
-                continue;
-              }
-
-              const heading = line.match(/^(#{1,6})\s+(.+?)\s*#*$/);
-              if (heading) {
-                flushParagraph();
-                flushList();
-                flushQuote();
-                const level = heading[1].length;
-                out.push(`<h${level}>${inlineMarkdown(heading[2])}</h${level}>`);
-                continue;
-              }
-
-              const bullet = line.match(/^\s*[-*+]\s+(.+)$/);
-              const ordered = line.match(/^\s*\d+[.)]\s+(.+)$/);
-              if (bullet || ordered) {
-                flushParagraph();
-                flushQuote();
-                const type = ordered ? 'ol' : 'ul';
-                if (listType && listType !== type) flushList();
-                listType = type;
-                listItems.push((bullet || ordered)[1]);
-                continue;
-              }
-
-              const blockquote = line.match(/^\s*>\s?(.*)$/);
-              if (blockquote) {
-                flushParagraph();
-                flushList();
-                quote.push(blockquote[1]);
-                continue;
-              }
-
-              flushList();
-              flushQuote();
-              paragraph.push(line.trim());
-            }
-
-            if (code) {
-              out.push(`<pre><code>${escapeHtml(code.lines.join('\n'))}</code></pre>`);
-            }
-            flushParagraph();
-            flushList();
-            flushQuote();
-            return out.join('\n');
-          }
-
-          const items = [];
-          for (const post of posts) {
-            const source = await fs.readFile(path.join(POSTS_DIR, `${post.slug}.md`), 'utf8');
-            const contentHtml = markdownToHtml(source);
-            const link = `${SITE_URL}/post.html?slug=${encodeURIComponent(post.slug)}`;
-            items.push([
-              '    <item>',
-              `      <title>${escapeXml(post.title)}</title>`,
-              `      <link>${escapeXml(link)}</link>`,
-              `      <description>${escapeXml(post.summary || '')}</description>`,
-              `      <content:encoded><![CDATA[${contentHtml.replaceAll(']]>', ']]]]><![CDATA[>')}]]></content:encoded>`,
-              `      <pubDate>${escapeXml(new Date(post.date).toUTCString())}</pubDate>`,
-              `      <guid isPermaLink="true">${escapeXml(link)}</guid>`,
-              '    </item>',
-            ].join('\n'));
-          }
-
-          const lastBuildDate = posts.length ? new Date(posts[0].date).toUTCString() : new Date().toUTCString();
-          const xml = [
-            '<?xml version="1.0" encoding="UTF-8"?>',
-            '<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">',
-            '  <channel>',
-            `    <title>${escapeXml(SITE_NAME)}</title>`,
-            `    <link>${escapeXml(SITE_URL + '/')}</link>`,
-            `    <description>${escapeXml(SITE_DESCRIPTION)}</description>`,
-            '    <language>en</language>',
-            `    <lastBuildDate>${escapeXml(lastBuildDate)}</lastBuildDate>`,
-            items.join('\n'),
-            '  </channel>',
-            '</rss>',
-            '',
-          ].join('\n');
-
-          await fs.writeFile(path.resolve('data/feed.xml'), xml, 'utf8');
-          console.log(`Generated feed.xml with ${posts.length} published items and full content.`);
-          NODE
-
-      - name: Generate sitemap.xml
-        shell: bash
-        run: |
-          node --input-type=module <<'NODE'
-          import { promises as fs } from 'node:fs';
-          import path from 'node:path';
-
-          const SITE_URL = process.env.SITE_URL.replace(/\/$/, '');
-          const posts = JSON.parse(await fs.readFile(path.resolve('data/posts.json'), 'utf8'));
-          const escapeXml = value => String(value ?? '')
-            .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
-            .replaceAll('"', '&quot;').replaceAll("'", '&apos;');
-          const defaultLastmod = posts[0]?.date || new Date().toISOString().slice(0, 10);
-          const urls = [
-            `  <url><loc>${escapeXml(SITE_URL + '/index.html')}</loc><lastmod>${escapeXml(defaultLastmod)}</lastmod></url>`,
-            `  <url><loc>${escapeXml(SITE_URL + '/about.html')}</loc><lastmod>${escapeXml(defaultLastmod)}</lastmod></url>`,
-            ...posts.map(post => `  <url><loc>${escapeXml(`${SITE_URL}/post.html?slug=${encodeURIComponent(post.slug)}`)}</loc><lastmod>${escapeXml(post.date)}</lastmod></url>`),
-          ];
-          const xml = [
-            '<?xml version="1.0" encoding="UTF-8"?>',
-            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
-            ...urls,
-            '</urlset>',
-            '',
-          ].join('\n');
-          await fs.writeFile(path.resolve('data/sitemap.xml'), xml, 'utf8');
-          console.log(`Generated sitemap.xml with ${urls.length} URLs.`);
-          NODE
-
-      - name: Commit generated data
-        shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/posts.json data/feed.xml data/sitemap.xml
-          if git diff --cached --quiet; then
-            echo "No generated data changes to commit."
-            exit 0
-          fi
-          git commit -m "chore: update generated blog indexes"
-          git push origin HEAD:main
+  window.siteConfigPromise
+    .then(loadArticle)
+    .catch(() => {
+      loadArticle({
+        siteName: 'Site Name',
+        siteDescription:
+          'A minimal personal blog about technology, experiments, notes, and the web.'
+      });
+    });
+})();
