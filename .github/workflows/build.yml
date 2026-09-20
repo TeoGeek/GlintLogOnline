@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 env:
-  SITE_URL: https://teogeek.pages.dev
+  SITE_URL: https://blog.kusteo.com
   SITE_NAME: TeoGeek
   SITE_DESCRIPTION: A minimal personal blog about technology, experiments, notes, and the web.
 
